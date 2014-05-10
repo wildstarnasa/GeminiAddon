@@ -18,7 +18,7 @@
 -- OnInitialize -> OnEnable -> OnRestoreSettings
 -- OnSaveSettings is called upon reloadui and character log out.
 
-local MAJOR, MINOR = "Gemini:Addon-1.0", 3
+local MAJOR, MINOR = "Gemini:Addon-1.0", 4
 local APkg = Apollo.GetPackage(MAJOR)
 if APkg and (APkg.nVersion or 0) >= MINOR then
 	return -- no upgrade is needed
@@ -161,7 +161,7 @@ function GeminiAddon:NewAddon(oAddonOrName, ...)
   
 	-- get dependencies
   local tDependencies
-  if type(select(i, ...)) == "table" then
+  if select(i, ...) and type(select(i, ...)) == "table" then
     tDependencies = select(i, ...)
     i = i + 1
   else

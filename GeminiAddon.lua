@@ -18,12 +18,12 @@
 -- OnInitialize -> OnEnable -> OnRestoreSettings
 -- OnSaveSettings is called upon reloadui and character log out.
 
-local MAJOR, MINOR = "Gemini:Addon-1.0", 2
-local APkg = Apollo.GetPackage("Gemini:Addon-1.0")
-local GeminiAddon = APkg and Apollo.GetPackage("Gemini:Addon-1.0").tPackage or {}
-if GeminiAddon and (GeminiAddon._VERSION or 0) >= MINOR then
+local MAJOR, MINOR = "Gemini:Addon-1.0", 3
+local APkg = Apollo.GetPackage(MAJOR)
+if APkg and (APkg.nVersion or 0) >= MINOR then
 	return -- no upgrade is needed
 end
+local GeminiAddon = APkg and APkg.tPackage or {}
 
 
 local error, type, tostring, select, pairs = error, type, tostring, select, pairs
@@ -31,7 +31,6 @@ local setmetatable, getmetatable, xpcall = setmetatable, getmetatable, xpcall
 local assert, loadstring, rawset, next, unpack = assert, loadstring, rawset, next, unpack
 local tinsert, tremove, ostime = table.insert, table.remove, os.time
 
-GeminiAddon._VERSION     = MINOR
 GeminiAddon.Addons       = GeminiAddon.Addons or {}        -- addon collection
 GeminiAddon.EnableQueue  = GeminiAddon.EnableQueue or {}   -- addons awaiting to be enabled
 GeminiAddon.RestoreQueue = GeminiAddon.RestoreQueue or {}  -- addons awaiting to be restored
@@ -44,6 +43,9 @@ GeminiAddon.Embeds       = GeminiAddon.Embeds or setmetatable({}, {__index = fun
 local function IsPlayerInWorld()
   return GameLib.GetPlayerUnit() ~= nil
 end
+
+local tLibError = Apollo.GetPackage("Gemini:LibError-1.0")
+local fnErrorHandler = tLibError and tLibError.tPackage.Error or Print
 
 -- xpcall safecall implementation
 local function CreateDispatcher(argCount)
@@ -65,7 +67,7 @@ local function CreateDispatcher(argCount)
   local ARGS = {}
   for i = 1, argCount do ARGS[i] = "arg"..i end
   code = code:gsub("ARGS", table.concat(ARGS, ", "))
-  return assert(loadstring(code, "safecall Dispatcher[" .. argCount .. "]"))(xpcall, error)
+  return assert(loadstring(code, "safecall Dispatcher[" .. argCount .. "]"))(xpcall, fnErrorHandler)
 end
 
 local Dispatchers = setmetatable({}, {__index=function(self, argCount)
@@ -74,7 +76,7 @@ local Dispatchers = setmetatable({}, {__index=function(self, argCount)
   return dispatcher
 end})
 Dispatchers[0] = function(func)
-  return xpcall(func, error)
+  return xpcall(func, fnErrorHandler)
 end
 
 local function safecall(func, ...)

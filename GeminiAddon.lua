@@ -31,6 +31,7 @@ local setmetatable, getmetatable, xpcall = setmetatable, getmetatable, xpcall
 local assert, loadstring, rawset, next, unpack = assert, loadstring, rawset, next, unpack
 local tinsert, tremove, ostime = table.insert, table.remove, os.time
 
+GeminiAddon._VERSION     = MINOR                           -- Needed for legacy package checking, can remove on Major increase
 GeminiAddon.Addons       = GeminiAddon.Addons or {}        -- addon collection
 GeminiAddon.EnableQueue  = GeminiAddon.EnableQueue or {}   -- addons awaiting to be enabled
 GeminiAddon.RestoreQueue = GeminiAddon.RestoreQueue or {}  -- addons awaiting to be restored

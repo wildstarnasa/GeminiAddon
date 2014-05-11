@@ -18,7 +18,7 @@
 -- OnInitialize -> OnEnable -> OnRestoreSettings
 -- OnSaveSettings is called upon reloadui and character log out.
 
-local MAJOR, MINOR = "Gemini:Addon-1.0", 4
+local MAJOR, MINOR = "Gemini:Addon-1.0", 5
 local APkg = Apollo.GetPackage(MAJOR)
 if APkg and (APkg.nVersion or 0) >= MINOR then
 	return -- no upgrade is needed
@@ -46,7 +46,7 @@ local function IsPlayerInWorld()
 end
 
 local tLibError = Apollo.GetPackage("Gemini:LibError-1.0")
-local fnErrorHandler = tLibError and tLibError.tPackage.Error or Print
+local fnErrorHandler = tLibError and tLibError.tPackage and tLibError.tPackage.Error or Print
 
 -- xpcall safecall implementation
 local function CreateDispatcher(argCount)

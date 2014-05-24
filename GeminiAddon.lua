@@ -18,7 +18,7 @@
 -- OnInitialize -> OnEnable -> OnRestoreSettings
 -- OnSaveSettings is called upon reloadui and character log out.
 
-local MAJOR, MINOR = "Gemini:Addon-1.0", 6
+local MAJOR, MINOR = "Gemini:Addon-1.0", 7
 local APkg = Apollo.GetPackage(MAJOR)
 if APkg and (APkg.nVersion or 0) >= MINOR then
 	return -- no upgrade is needed
@@ -30,6 +30,7 @@ local error, type, tostring, select, pairs = error, type, tostring, select, pair
 local setmetatable, getmetatable, xpcall = setmetatable, getmetatable, xpcall
 local assert, loadstring, rawset, next, unpack = assert, loadstring, rawset, next, unpack
 local tinsert, tremove, ostime = table.insert, table.remove, os.time
+local QueuedForRestore
 
 GeminiAddon._VERSION        = MINOR
 GeminiAddon.Addons          = GeminiAddon.Addons or {}          -- addon collection
@@ -738,7 +739,7 @@ function GeminiAddon:IterateAddons() return pairs(self.Addons) end
 -- end
 function GeminiAddon:IterateAddonStatus() return pairs(self.AddonStatus) end
 
-local function QueuedForRestore(oAddon)
+function QueuedForRestore(oAddon)
 	for i = 1, #GeminiAddon.RestoreQueue do
 		if GeminiAddon.RestoreQueue[i].oAddon == oAddon then
 			return i

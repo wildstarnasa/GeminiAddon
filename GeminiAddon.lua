@@ -18,7 +18,7 @@
 -- OnInitialize -> OnEnable -> OnRestoreSettings
 -- OnSaveSettings is called upon reloadui and character log out.
 
-local MAJOR, MINOR = "Gemini:Addon-1.0", 5
+local MAJOR, MINOR = "Gemini:Addon-1.0", 6
 local APkg = Apollo.GetPackage(MAJOR)
 if APkg and (APkg.nVersion or 0) >= MINOR then
 	return -- no upgrade is needed
@@ -31,18 +31,19 @@ local setmetatable, getmetatable, xpcall = setmetatable, getmetatable, xpcall
 local assert, loadstring, rawset, next, unpack = assert, loadstring, rawset, next, unpack
 local tinsert, tremove, ostime = table.insert, table.remove, os.time
 
-GeminiAddon._VERSION     = MINOR                           -- Needed for legacy package checking, can remove on Major increase
-GeminiAddon.Addons       = GeminiAddon.Addons or {}        -- addon collection
-GeminiAddon.EnableQueue  = GeminiAddon.EnableQueue or {}   -- addons awaiting to be enabled
-GeminiAddon.RestoreQueue = GeminiAddon.RestoreQueue or {}  -- addons awaiting to be restored
-GeminiAddon.AddonStatus  = GeminiAddon.AddonStatus or {}   -- status of addons
+GeminiAddon._VERSION        = MINOR
+GeminiAddon.Addons          = GeminiAddon.Addons or {}          -- addon collection
+GeminiAddon.InitializeQueue = GeminiAddon.InitializeQueue or {} -- addons that are new and not initialized
+GeminiAddon.EnableQueue     = GeminiAddon.EnableQueue or {}     -- addons awaiting to be enabled
+GeminiAddon.RestoreQueue    = GeminiAddon.RestoreQueue or {}    -- addons awaiting to be restored
+GeminiAddon.AddonStatus     = GeminiAddon.AddonStatus or {}     -- status of addons
 
  -- per addon embedded packages list
 GeminiAddon.Embeds       = GeminiAddon.Embeds or setmetatable({}, {__index = function(tbl, key) tbl[key] = {} return tbl[key] end })
 
 -- Check if the player unit is available
 local function IsPlayerInWorld()
-  return GameLib.GetPlayerUnit() ~= nil
+	return GameLib.GetPlayerUnit() ~= nil
 end
 
 local tLibError = Apollo.GetPackage("Gemini:LibError-1.0")
@@ -50,7 +51,7 @@ local fnErrorHandler = tLibError and tLibError.tPackage and tLibError.tPackage.E
 
 -- xpcall safecall implementation
 local function CreateDispatcher(argCount)
-  local code = [[
+	local code = [[
 		local xpcall, eh = ...
 		local method, ARGS
 		local function call() return method(ARGS) end
@@ -64,28 +65,27 @@ local function CreateDispatcher(argCount)
 	
 		return dispatch
 	]]
-  
-  local ARGS = {}
-  for i = 1, argCount do ARGS[i] = "arg"..i end
-  code = code:gsub("ARGS", table.concat(ARGS, ", "))
-  return assert(loadstring(code, "safecall Dispatcher[" .. argCount .. "]"))(xpcall, fnErrorHandler)
+	
+	local ARGS = {}
+	for i = 1, argCount do ARGS[i] = "arg"..i end
+	code = code:gsub("ARGS", table.concat(ARGS, ", "))
+	return assert(loadstring(code, "safecall Dispatcher[" .. argCount .. "]"))(xpcall, fnErrorHandler)
 end
 
 local Dispatchers = setmetatable({}, {__index=function(self, argCount)
-  local dispatcher = CreateDispatcher(argCount)
-  rawset(self, argCount, dispatcher)
-  return dispatcher
+	local dispatcher = CreateDispatcher(argCount)
+	rawset(self, argCount, dispatcher)
+	return dispatcher
 end})
 Dispatchers[0] = function(func)
-  return xpcall(func, fnErrorHandler)
+	return xpcall(func, fnErrorHandler)
 end
 
 local function safecall(func, ...)
-  if type(func) == "function" then
-    return Dispatchers[select('#', ...)](func, ...)
-  end
+	if type(func) == "function" then
+		return Dispatchers[select('#', ...)](func, ...)
+	end
 end
-
 
 -- delay the firing the OnEnable callback until after OnLoad is called
 -- this is required if we are reloading the ui
@@ -95,23 +95,107 @@ Apollo.RegisterEventHandler("CharacterCreated", "OnCharacterCreated", GeminiAddo
 --- Processes the enable and restore queues when the player enters the world
 -- **Note:** do not call this manually
 function GeminiAddon:OnCharacterCreated()
-  -- process enable queue for each addon
-  while #self.EnableQueue > 0 do
-    local oAddon = tremove(self.EnableQueue, 1)
-    GeminiAddon:EnableAddon(oAddon)
-  end
-  while #self.RestoreQueue > 0 do
-    local tAddonRestore = tremove(self.RestoreQueue, 1)
-    GeminiAddon:RestoreAddon(tAddonRestore.oAddon, tAddonRestore.eLevel, tAddonRestore.tSavedData)
-  end
+	while (#self.InitializeQueue > 0) do
+		local oAddon = tremove(GeminiAddon.InitializeQueue, 1)
+		self:InitializeAddon(oAddon)
+		tinsert(GeminiAddon.EnableQueue, oAddon)
+	end
+
+	while (#self.EnableQueue > 0) do
+		local oAddon = tremove(GeminiAddon.EnableQueue, 1)
+		self:EnableAddon(oAddon)
+	end
+
+	for strName, oAddon in pairs(self.Addons) do
+		if oAddon.OnRestore == GeminiAddon.GeminiRestore then
+			if oAddon.___bRestoreOccurred then
+				local nRestoreIndex = QueuedForRestore(oAddon)
+				while nRestoreIndex do
+					local tAddonRestore = tremove(self.RestoreQueue, nRestoreIndex)
+					self:RestoreAddon(tAddonRestore.oAddon, tAddonRestore.eLevel, tAddonRestore.tSavedData)
+				end
+				oAddon.___bRestoreOccurred = nil
+			else
+				for k,v in pairs(GameLib.CodeEnumAddonSaveLevel) do
+					self:RestoreAddon(oAddon, v, nil)
+				end
+			end
+		end
+	end
 end
 
 local function AddonToString(self)
-  return self.Name
+	return self.Name
 end
 
-local Enable, Disable, EmbedAddon, GetName, SetEnabledState
+-- Check if the addon is queued for initialization
+local function QueuedForInitialization(oAddon)
+	for i = 1, #GeminiAddon.InitializeQueue do
+		if GeminiAddon.InitializeQueue[i] == oAddon then
+			return true
+		end
+	end
+	return false
+end
+
+function GeminiAddon:GeminiRestore(eLevel, tSavedData)
+	self.___bRestoreOccurred = true
+	if IsPlayerInWorld() then
+		safecall(self.OnRestoreSettings, self, eLevel, tSavedData)
+	else
+		tinsert(GeminiAddon.RestoreQueue, { oAddon = self, eLevel = eLevel, tSavedData = tSavedData })
+	end
+end
+
+local Enable, Disable, Embed, GetName, SetEnabledState, AddonLog
 local EmbedModule, EnableModule, DisableModule, NewModule, GetModule, SetDefaultModulePrototype, SetDefaultModuleState, SetDefaultModulePackages
+
+function GeminiAddon:NewAddonProto(oAddonOrName, ...)
+	local oAddon, strAddonName
+	local i = 1
+	-- get addon name
+	if type(oAddonOrName) == "table" then
+		oAddon = oAddonOrName
+		strAddonName = ...
+		i = 2
+	else
+		strAddonName = oAddonOrName
+	end
+	
+	if type(strAddonName) ~= "string" then
+		error(("Usage: NewAddon([object, ] strAddonName, bOnConfigure[, tDependencies][, strPkgName, ...]): 'strAddonName' - string expected got '%s'."):format(type(strAddonName)), 2)
+	end
+	if self.Addons[strAddonName] then
+		error(("Usage: NewAddon([object, ] strAddonName, bOnConfigure[, tDependencies][, strPkgName, ...]): 'strAddonName' - Addon '%s' already registered in GeminiAddon."):format(strAddonName), 2)
+	end
+	
+	oAddon = oAddon or {}
+	oAddon.Name = strAddonName
+	
+	-- use existing metatable if exists
+	local addonmeta = {}
+	local oldmeta = getmetatable(oAddon)
+	if oldmeta then
+		for k,v in pairs(oldmeta) do addonmeta[k] = v end
+	end
+	addonmeta.__tostring = AddonToString
+	setmetatable(oAddon, addonmeta)
+	
+	-- setup addon skeleton
+	self.Addons[strAddonName] = oAddon
+	oAddon.Modules = {}
+	oAddon.OrderedModules = {}
+	oAddon.DefaultModulePackages = {}
+
+	-- Embed any packages that are needed
+	Embed( oAddon )
+	self:EmbedPackages(oAddon, select(i, ...))
+	
+	-- Add to Queue of Addons to be Initialized during OnLoad
+	tinsert(self.InitializeQueue, oAddon)
+	return oAddon
+end
+
 
 -- Create a new addon using GeminiAddon
 -- The final addon object will be returned.
@@ -139,100 +223,77 @@ local EmbedModule, EnableModule, DisableModule, NewModule, GetModule, SetDefault
 -- local tAddonBase = { config = { ... some default settings ... }, ... }
 -- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.0").tPackage:NewAddon(tAddonBase, "MyAddon", false, { "ChatLog", "ChatLogEx" })
 function GeminiAddon:NewAddon(oAddonOrName, ...)
-  local oAddon, strAddonName
-  local i = 1
+	local oAddon, strAddonName
+	local tGenArgs = {}
+	local i = 1
 	-- get addon name
-  if type(oAddonOrName) == "table" then
-    oAddon = oAddonOrName
-    strAddonName = select(i, ...)
-    i = 2
-  else
-    strAddonName = oAddonOrName
-  end
-  
-	-- get configure state
-  local strConfigBtnName = select(i, ...); i = i + 1
-  local bConfigure = (strConfigBtnName == true or type(strConfigBtnName) == "string")
-  if bConfigure then
-    strConfigBtnName = type(strConfigBtnName) == "boolean" and strAddonName or strConfigBtnName
-  else
-    strConfigBtnName = ""
-  end
-  
-	-- get dependencies
-  local tDependencies
-  if select(i, ...) and type(select(i, ...)) == "table" then
-    tDependencies = select(i, ...)
-    i = i + 1
-  else
-    tDependencies = {}
-  end
-  
-  if type(strAddonName) ~= "string" then
-    error(("Usage: NewAddon([object, ] strAddonName, bOnConfigure[, tDependencies][, strPkgName, ...]): 'strAddonName' - string expected got '%s'."):format(type(strAddonName)), 2)
-  end
-  if self.Addons[strAddonName] then
-    error(("Usage: NewAddon([object, ] strAddonName, bOnConfigure[, tDependencies][, strPkgName, ...]): 'strAddonName' - Addon '%s' already registered in GeminiAddon."):format(strAddonName), 2)
-  end
-  
-  oAddon = oAddon or {}
-  oAddon.Name = strAddonName
-  
-  -- use existing metatable if exists
-  local addonmeta = {}
-  local oldmeta = getmetatable(oAddon)
-  if oldmeta then
-    for k,v in pairs(oldmeta) do addonmeta[k] = v end
-  end
-  addonmeta.__tostring = AddonToString
-  setmetatable(oAddon, addonmeta)
-  
-  -- setup addon skeleton
-  self.Addons[strAddonName] = oAddon
-  oAddon.Modules = {}
-  oAddon.OrderedModules = {}
-  oAddon.DefaultModulePackages = {}
+	if type(oAddonOrName) == "table" then
+		strAddonName = ...
+		tinsert(tGenArgs, strAddonName)
+		i = 2
+	else
+		strAddonName = oAddonOrName
+	end
 
-  
-  -- Embed any packages that are needed
-  EmbedAddon( oAddon )
-  self:EmbedPackages(oAddon, select(i, ...))
-  
-  -- Setup callbacks for the addon
+	-- get configure state
+	local strConfigBtnName = select(i, ...); i = i + 1
+	local bConfigure = (strConfigBtnName == true or type(strConfigBtnName) == "string")
+	if bConfigure then
+		strConfigBtnName = type(strConfigBtnName) == "boolean" and strAddonName or strConfigBtnName
+	else
+		strConfigBtnName = ""
+	end
+
+	-- get dependencies
+	local tDependencies
+	if select(i,...) and type(select(i, ...)) == "table" then
+		tDependencies = select(i, ...)
+		i = i + 1
+	else
+		tDependencies = {}
+	end
+
+	for nIndex = i, select('#', ...) do
+		tinsert(tGenArgs, select(nIndex,...))
+	end
+
+	local oAddon = self:NewAddonProto(oAddonOrName, unpack(tGenArgs))
+
+	-- Setup callbacks for the addon
 	-- Setup the OnLoad callback handler to initialize the addon
 	-- and either enable or delay enable the addon
-  oAddon.OnLoad = function(self)
-    GeminiAddon:InitializeAddon(self)
-    
-    if IsPlayerInWorld() then
-      GeminiAddon:EnableAddon(self)
-    else
-      tinsert(GeminiAddon.EnableQueue, self)
-    end
-  end
-  
-	-- Setup the OnRestore callback handler to either call OnRestoreSettings or
-	-- delay until the character is loaded
-  oAddon.OnRestore = function(self, eLevel, tSavedData)
-    if IsPlayerInWorld() then
-      safecall(self.OnRestoreSettings, self, eLevel, tSavedData)
-    else
-      tinsert(GeminiAddon.RestoreQueue, { oAddon = self, eLevel = eLevel, tSavedData = tSavedData })
-    end
-  end
-  
-	-- Setup the OnSave callback handler to call OnSaveSettings
-  oAddon.OnSave = function(self, eLevel)
-    if type(self.OnSaveSettings) == "function" then
-      return self:OnSaveSettings(eLevel)
-    end
-  end
-    
+	oAddon.OnLoad = function(self)
+		while (#GeminiAddon.InitializeQueue > 0) do
+			local oAddonToInit = tremove(GeminiAddon.InitializeQueue, 1)
+			local retVal = GeminiAddon:InitializeAddon(oAddonToInit)
+			if retVal ~= nil then return retVal end
+			tinsert(GeminiAddon.EnableQueue, oAddonToInit)
+		end
 		
-	-- register the addon with Apollo
-  Apollo.RegisterAddon(oAddon, bConfigure, strConfigBtnName, tDependencies)
-  
-  return oAddon  
+		if IsPlayerInWorld() then
+			while (#GeminiAddon.EnableQueue > 0) do
+				local oAddonToInit = tremove(GeminiAddon.EnableQueue, 1)
+				GeminiAddon:EnableAddon(oAddonToInit)
+			end
+		end
+	end
+	
+	-- Setup the OnRestore callback handler to either call OnRestoreSettings or
+	-- delay until the character is loaded.  Possibly setup by a Mixin, if so
+	-- preserve the embed
+	oAddon.OnRestore = oAddon.OnRestore or GeminiAddon.GeminiRestore
+	
+	-- Setup the OnSave callback handler to call OnSaveSettings.  Possibly setup
+	-- by a Mixin, if so preserve the embed
+	oAddon.OnSave = oAddon.OnSave or function(self, eLevel)
+		if type(self.OnSaveSettings) == "function" then
+			return self:OnSaveSettings(eLevel)
+		end
+	end
+
+	-- Register with Apollo
+	Apollo.RegisterAddon(oAddon, bConfigure, strConfigBtnName, tDependencies)
+	return oAddon
 end
 
 -- Get the addon object by its name from the internal GeminiAddon addon registry
@@ -242,16 +303,16 @@ end
 -- @usage
 -- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.0").tPackage:GetAddon("MyAddon")
 function GeminiAddon:GetAddon(strAddonName, bSilent)
-  if not bSilent and not self.Addons[strAddonName] then
-    error(("Usage: GetAddon(strAddonName): 'strAddonName' - Cannot find an GeminiAddon called '%s'."):format(tostring(strAddonName)), 2)
-  end
-  return self.Addons[strAddonName]
+	if not bSilent and not self.Addons[strAddonName] then
+		error(("Usage: GetAddon(strAddonName): 'strAddonName' - Cannot find an GeminiAddon called '%s'."):format(tostring(strAddonName)), 2)
+	end
+	return self.Addons[strAddonName]
 end
 
 
 -- Used internally when OnRestore is delayed
 function GeminiAddon:RestoreAddon(oAddon, eLevel, tSavedData)
-  safecall(oAddon.OnRestoreSettings, oAddon, eLevel, tSavedData)
+	safecall(oAddon.OnRestoreSettings, oAddon, eLevel, tSavedData)
 end
 
 --- Enable the addon
@@ -260,69 +321,70 @@ end
 -- **Note:** do not call this manually
 -- @param oAddon addon object to enable
 function GeminiAddon:EnableAddon(oAddon)
-  if type(oAddon) == "string" then 
-    oAddon = self:GetAddon(oAddon) 
-  end
-  
-  local strAddonName = oAddon:GetName()
-  
-  if self.AddonStatus[strAddonName] or not oAddon.EnabledState then
-    return false
-  end
-  
-  self.AddonStatus[strAddonName] = true
-  
-  safecall(oAddon.OnEnable, oAddon)
-  
-  if self.AddonStatus[strAddonName] then
-    -- embed packages
-    local tEmbeds = self.Embeds[oAddon]
-    for i = 1, #tEmbeds do
-      local oPkg = Apollo.GetPackage(tEmbeds[i]).tPackage
-      if oPkg then
-        safecall(oPkg.OnEmbedEnable, oPkg, oAddon)
-      end
-    end
-    
-    -- enable modules
-    local tModules = oAddon.OrderedModules
-    for i = 1, #tModules do
-      oAddon:EnableModule(tModules[i].ModuleName)
-    end
-  end
-  return self.AddonStatus[strAddonName]
+	if type(oAddon) == "string" then 
+		oAddon = self:GetAddon(oAddon) 
+	end
+	
+	local strAddonName = AddonToString(oAddon)
+	
+	if self.AddonStatus[strAddonName] or not oAddon.EnabledState then
+		return false
+	end
+	
+	self.AddonStatus[strAddonName] = true
+	safecall(oAddon.OnEnable, oAddon)
+	
+	if self.AddonStatus[strAddonName] then
+		-- embed packages
+		local tEmbeds = self.Embeds[oAddon]
+		for i = 1, #tEmbeds do
+			local APkg = Apollo.GetPackage(tEmbeds[i])
+			local oPkg = APkg and APkg.tPackage or nil
+			if oPkg then
+				safecall(oPkg.OnEmbedEnable, oPkg, oAddon)
+			end
+		end
+		
+		-- enable modules
+		local tModules = oAddon.OrderedModules
+		for i = 1, #tModules do
+			oAddon:EnableModule(tModules[i].ModuleName)
+		end
+	end
+	return self.AddonStatus[strAddonName]
 end
 
---function GeminiAddon:DisableAddon(oAddon)
---  if type(oAddon) == "string" then
---    oAddon = self:GetAddon(oAddon)
---  end
---
---  local strAddonName = oAddon:GetName()
---
---  if not self.AddonStatus[strAddonName] then
---    return false
---  end
---
---  if self.AddonStatus[strAddonName] then
---    local tEmbeds = self.Embeds[oAddon]
---    for i = 1, #tEmbeds do
---      local oPkg = Apollo.GetPackage(tEmbeds[i]).tPackage
---      if oPkg then
---        safecall(oPkg.OnEmbedDisable, oPkg, oAddon)
---      end
---    end
---
---    local tModules = oAddon.OrderedModules
---    for i = 1, #tModules do
---      oAddon:DisableModule(tModules[i])
---    end
---  end
---
---  return not self.AddonStatus[strAddonName]
---end
+function GeminiAddon:DisableAddon(oAddon)
+	if type(oAddon) == "string" then
+		oAddon = self:GetAddon(oAddon)
+	end
 
+	local strAddonName = AddonToString(oAddon)
 
+	if not self.AddonStatus[strAddonName] then
+		return false
+	end
+
+	safecall( addon.OnDisable, oAddon )
+
+	if self.AddonStatus[strAddonName] then
+		local tEmbeds = self.Embeds[oAddon]
+			for i = 1, #tEmbeds do
+			local APkg = Apollo.GetPackage(tEmbeds[i])
+			local oPkg = APkg and APkg.tPackage or nil
+			if oPkg then
+				safecall(oPkg.OnEmbedDisable, oPkg, oAddon)
+			end
+		end
+
+		local tModules = oAddon.OrderedModules
+		for i = 1, #tModules do
+			oAddon:DisableModule(tModules[i])
+		end
+	end
+
+	return not self.AddonStatus[strAddonName]
+end
 
 --- Initialize the addon after creation
 -- Used internally when OnLoad is called for the addon
@@ -330,15 +392,18 @@ end
 -- **Note:** do not call this manually
 -- @param oAddon addon object to initialize
 function GeminiAddon:InitializeAddon(oAddon)
-  safecall(oAddon.OnInitialize, oAddon)
-  
-  local tEmbeds = self.Embeds[oAddon]
-  for i = 1, #tEmbeds do
-    local oPkg = Apollo.GetPackage(tEmbeds[i]).tPackage
-    if oPkg then 
-      safecall(oPkg.OnEmbedInitialize, oPkg, oAddon) 
-    end
-  end
+	local _, retVal = safecall(oAddon.OnInitialize, oAddon)
+	if retVal ~= nil then return retVal end
+	
+	local tEmbeds = self.Embeds[oAddon]
+	for i = 1, #tEmbeds do
+		local APkg = Apollo.GetPackage(tEmbeds[i])
+		local oPkg = APkg and APkg.tPackage or nil
+		if oPkg then
+			local _, retVal = safecall(oPkg.OnEmbedInitialize, oPkg, oAddon)
+			if retVal ~= nil then return retVal end
+		end
+	end
 end
 
 --- Embed packages into the specified addon
@@ -346,31 +411,32 @@ end
 -- @param oAddon The addon object to embed packages in
 -- @param strPkgName List of packages to embed into the addon
 function GeminiAddon:EmbedPackages(oAddon, ...)
-  for i = 1, select('#', ...) do
-    local strPkgName = select(i, ...)
-    self:EmbedPackage(oAddon, strPkgName, false, 4)
-  end
+	for i = 1, select('#', ...) do
+		local strPkgName = select(i, ...)
+		self:EmbedPackage(oAddon, strPkgName, false, 4)
+	end
 end
 
 --- Embed a package into the specified addon
 --
 -- **Note:** This function is for internal use by :EmbedPackages
 -- @paramsig strAddonName, strPkgName[, silent[, offset]]
--- @param strAddonName addon object to embed the package in
+-- @param oAddon addon object to embed the package in
 -- @param strPkgName name of the package to embed
 -- @param bSilent marks an embed to fail silently if the package doesn't exist (optional)
 -- @param nOffset will push the error messages back to said offset, defaults to 2 (optional)
 function GeminiAddon:EmbedPackage(oAddon, strPkgName, bSilent, nOffset)
-  local oPkg = Apollo.GetPackage(strPkgName).tPackage
-  if not oPkg and not bSilent then
-    error(("Usage: EmbedPackage(oAddon, strPkgName, bSilent, nOffset): 'strPkgName' - Cannot find a package instance of '%s'."):format(tostring(strPkgName)), nOffset or 2)
-  elseif oPkg and type(oPkg.Embed) == "function" then
-    oPkg:Embed(oAddon)
-    tinsert(self.Embeds[oAddon], strPkgName)
-    return true
-  elseif oPkg then
-    error(("Usage: EmbedPackage(oAddon, strPkgName, bSilent, nOffset): Package '%s' is not Embed capable."):format(tostring(strPkgName)), nOffset or 2)
-  end
+	local APkg = Apollo.GetPackage(strPkgName)
+	local oPkg = APkg and APkg.tPackage or nil
+	if not oPkg and not bSilent then
+		error(("Usage: EmbedPackage(oAddon, strPkgName, bSilent, nOffset): 'strPkgName' - Cannot find a package instance of '%s'."):format(tostring(strPkgName)), nOffset or 2)
+	elseif oPkg and type(oPkg.Embed) == "function" then
+		oPkg:Embed(oAddon)
+		tinsert(self.Embeds[oAddon], strPkgName)
+		return true
+	elseif oPkg then
+		error(("Usage: EmbedPackage(oAddon, strPkgName, bSilent, nOffset): Package '%s' is not Embed capable."):format(tostring(strPkgName)), nOffset or 2)
+	end
 end
 
 --- Return the specified module from an addon object.
@@ -382,30 +448,13 @@ end
 -- @usage 
 -- local MyModule = MyAddon:GetModule("MyModule")
 function GetModule(self, strModuleName, bSilent)
-  if not self.Modules[strModuleName] and not bSilent then
-    error(("Usage: GetModule(strModuleName, bSilent): 'strModuleName' - Cannot find module '%s'."):format(tostring(strModuleName)), 2)
-  end
-  return self.Modules[strModuleName]
+	if not self.Modules[strModuleName] and not bSilent then
+		error(("Usage: GetModule(strModuleName, bSilent): 'strModuleName' - Cannot find module '%s'."):format(tostring(strModuleName)), 2)
+	end
+	return self.Modules[strModuleName]
 end
 
-
-
---- Creates an empty module prototype
--- Used internally
--- **Note:** do not call this manually
--- @param strName unique name of the module
--- @return oModule the module object
-function GeminiAddon:NewModule(strName)
-  local oModule = {}
-  oModule.Name = strName
-  
-  -- use existing metatable if exists
-  local addonmeta = {}
-  addonmeta.__tostring = GetName
-  setmetatable(oModule, addonmeta)
-  
-  return oModule
-end
+local function IsModuleTrue(self) return true end
 
 --- Create a new module for the addon.
 -- The new module can have its own embedded packages and/or use a module prototype to be mixed into the module.
@@ -425,22 +474,23 @@ function NewModule(self, strName, oPrototype, ...)
 	if type(strName) ~= "string" then error(("Usage: NewModule(strName, [oPrototype, [strPkgName, strPkgName, strPkgName, ...]): 'strName' - string expected got '%s'."):format(type(strName)), 2) end
 	if type(oPrototype) ~= "string" and type(oPrototype) ~= "table" and type(oPrototype) ~= "nil" then error(("Usage: NewModule(strName, [oPrototype, [strPkgName, strPkgName, strPkgName, ...]): 'oPrototype' - table (oPrototype), string (strPkgName) or nil expected got '%s'."):format(type(oPrototype)), 2) end
 	if self.Modules[strName] then error(("Usage: NewModule(strName, [oPrototype, [strPkgName, strPkgName, strPkgName, ...]): 'strName' - Module '%s' already exists."):format(strName), 2) end
-  
-  local oModule = GeminiAddon:NewModule(string.format("%s_%s", self:GetName() or tostring(self), strName))
-  oModule.ModuleName = strName
-  
-  EmbedModule(oModule)
-  
-  if type(oPrototype) == "string" then
-    GeminiAddon:EmbedPackages(oModule, oPrototype, ...)
+	
+	local oModule = GeminiAddon:NewAddonProto(string.format("%s_%s", self:GetName() or tostring(self), strName))
+
+	oModule.IsModule = IsModuleTrue
+	oModule:SetEnabledState(self.DefaultModuleState)
+	oModule.ModuleName = strName
+	
+	if type(oPrototype) == "string" then
+		GeminiAddon:EmbedPackages(oModule, oPrototype, ...)
 	else
-    GeminiAddon:EmbedPackages(oModule, ...)
+		GeminiAddon:EmbedPackages(oModule, ...)
 	end
 	GeminiAddon:EmbedPackages(oModule, unpack(self.DefaultModulePackages))
 
 	if not oPrototype or type(oPrototype) == "string" then
 		oPrototype = self.DefaultModulePrototype or nil
-    --self:_Log("Using Prototype type: " .. tostring(oPrototype))
+		--self:_Log("Using Prototype type: " .. tostring(oPrototype))
 	end
 	
 	if type(oPrototype) == "table" then
@@ -456,7 +506,6 @@ function NewModule(self, strName, oPrototype, ...)
 	return oModule  
 end
 
-
 --- returns the name of the addon or module without any prefix
 -- @name //addon|module//:GetName
 -- @paramsig
@@ -464,17 +513,17 @@ end
 -- Print(MyAddon:GetName())
 -- Print(MyAddon:GetModule("MyModule"):GetName())
 function GetName(self)
-  return self.ModuleName or self.Name
+	return self.ModuleName or self.Name
 end
 
 -- Check if the addon is queued to be enabled
 local function QueuedForEnable(oAddon)
-  for i = 1, #GeminiAddon.EnableQueue do
-    if GeminiAddon.EnableQueue[i] == oAddon then
-      return true
-    end
-  end
-  return false
+	for i = 1, #GeminiAddon.EnableQueue do
+		if GeminiAddon.EnableQueue[i] == oAddon then
+			return true
+		end
+	end
+	return false
 end
 
 --- Enables the addon, if possible, returns true on success.
@@ -485,23 +534,23 @@ end
 -- @paramsig
 -- @usage
 function Enable(self)
-  self:SetEnabledState(true)
-  
-  if not QueuedForEnable(self) then
-    if IsPlayerInWorld() then
-      -- attempt to enable it
-      return GeminiAddon:EnableAddon(self)
-    else
-      -- add to enable queue
-      tinsert(GeminiAddon.EnableQueue, self)
-    end
-  end
+	self:SetEnabledState(true)
+	
+	if not QueuedForEnable(self) then
+		if IsPlayerInWorld() then
+			-- attempt to enable it
+			return GeminiAddon:EnableAddon(self)
+		else
+			-- add to enable queue
+			tinsert(GeminiAddon.EnableQueue, self)
+		end
+	end
 end
 
---function Disable(self)
---  self:SetEnabledState(false)
---  return GeminiAddon:DisableAddon(self)
---end
+function Disable(self)
+	self:SetEnabledState(false)
+	return GeminiAddon:DisableAddon(self)
+end
 
 
 --- Enables the Module, if possible, return true or false depending on success.
@@ -516,8 +565,8 @@ end
 -- -- Enable MyModule using the short-hand
 -- MyAddon:EnableModule("MyModule")
 function EnableModule(self, strModuleName)
-  local oModule = self:GetModule(strModuleName)
-  return oModule:Enable()
+	local oModule = self:GetModule(strModuleName)
+	return oModule:Enable()
 end
 
 --- Disables the Module, if possible, return true or false depending on success.
@@ -532,8 +581,8 @@ end
 -- -- Disable MyModule using the short-hand
 -- local MyAddon:DisableModule("MyModule")
 function DisableModule(self, strModuleName)
-  local oModule = self:GetModule(strModuleName)
-  return oModule:Disable()
+	local oModule = self:GetModule(strModuleName)
+	return oModule:Disable()
 end
 
 --- Set the default packages to be mixed into all modules created by this object.
@@ -549,10 +598,10 @@ end
 -- -- Create a module
 -- local MyModule = MyAddon:NewModule("MyModule")
 function SetDefaultModulePackages(self, ...)
-  if next(self.Modules) then
-    error("Usage: SetDefaultModulePackages(...): cannot change the module defaults after a module has been registered.", 2)
-  end
-  self.DefaultModulePackages = {...}
+	if next(self.Modules) then
+		error("Usage: SetDefaultModulePackages(...): cannot change the module defaults after a module has been registered.", 2)
+	end
+	self.DefaultModulePackages = {...}
 end
 
 --- Set the default state in which new modules are being created.
@@ -569,10 +618,10 @@ end
 -- local MyModule = MyAddon:NewModule("MyModule")
 -- MyModule:Enable()
 function SetDefaultModuleState(self, bState)
-  if next(self.Modules) then
-    error("Usage: SetDefaultModuleState(bState): cannot change the module defaults after a module has been registered.", 2)
-  end
-  self.DefaultModuleState = bState
+	if next(self.Modules) then
+		error("Usage: SetDefaultModuleState(bState): cannot change the module defaults after a module has been registered.", 2)
+	end
+	self.DefaultModuleState = bState
 end
 
 --- Set the default prototype to use for new modules on creation.
@@ -606,7 +655,7 @@ end
 -- @paramsig state
 -- @param state the state of an addon or module  (enabled = true, disabled = false)
 function SetEnabledState(self, bState)
-  self.EnabledState = bState
+	self.EnabledState = bState
 end
 
 --- Return an iterator of all modules associated to the addon.
@@ -633,13 +682,14 @@ local function IterateEmbeds(self) return pairs(GeminiAddon.Embeds[self]) end
 -- end
 local function IsEnabled(self) return self.EnabledState end
 
+local function IsModule(self) return false end
 
 local function AddonLog(self, t)
-  self._DebugLog = self._DebugLog or {}
-  tinsert(self._DebugLog, { what = t, when = ostime() })
+	self._DebugLog = self._DebugLog or {}
+	tinsert(self._DebugLog, { what = t, when = ostime() })
 end
 
-local tAddonMixins = {
+local tMixins = {
 	NewModule = NewModule,
 	GetModule = GetModule,
 	Enable = Enable,
@@ -655,58 +705,20 @@ local tAddonMixins = {
 	IterateEmbeds = IterateEmbeds,
 	GetName = GetName,
 --  _Log = AddonLog,
-  DefaultModuleState = true,
-  EnabledState = true,
-}
-
-local tModuleMixins = {
-  GetName = GetName,
---  _Log = AddonLog,
-	IsEnabled = IsEnabled,
-	SetEnabledState = SetEnabledState,
-  Enable = function(self)
-    safecall(self.OnEnable, self)
-    if self.EnabledState then
-      -- embed packages
-      local tEmbeds = GeminiAddon.Embeds[self]
-      for i = 1, #tEmbeds do
-        local oPkg = Apollo.GetPackage(tEmbeds[i]).tPackage
-        if oPkg then
-          safecall(oPkg.OnEmbedEnable, oPkg, self)
-        end
-      end
-    end
-  end,
-  Disable = function(self)
-    local tEmbeds = GeminiAddon.Embeds[self]
-    for i = 1, #tEmbeds do
-      local oPkg = Apollo.GetPackage(tEmbeds[i]).tPackage
-      if oPkg then
-        safecall(oPkg.OnEmbedDisable, oPkg, self)
-      end
-    end
-  end,
+	DefaultModuleState = true,
+	EnabledState = true,
+	IsModule = IsModule,
 }
 
 -- Embed( target )
 -- target (object) - target GeminiAddon object to embed in
 --
 -- **Note:** This is for internal use only.  Do not call manually
-local function Embed(target, mixins)
-	for k, v in pairs(mixins) do
+function Embed(target)
+	for k, v in pairs(tMixins) do
 		target[k] = v
 	end
 end
-
-function EmbedAddon(target)
-  Embed(target, tAddonMixins)
-end
-
-function EmbedModule(target)
-  Embed(target, tModuleMixins)
-end
-
-
 
 --- Get an iterator over all registered addons.
 -- @usage 
@@ -726,8 +738,22 @@ function GeminiAddon:IterateAddons() return pairs(self.Addons) end
 -- end
 function GeminiAddon:IterateAddonStatus() return pairs(self.AddonStatus) end
 
+local function QueuedForRestore(oAddon)
+	for i = 1, #GeminiAddon.RestoreQueue do
+		if GeminiAddon.RestoreQueue[i].oAddon == oAddon then
+			return i
+		end
+	end
+	return false
+end
 
-function GeminiAddon:OnLoad() end
+function GeminiAddon:OnFirstFrame()
+	Apollo.RemoveEventHandler("NextFrame", self)
+end
+
+function GeminiAddon:OnLoad()
+	Apollo.RegisterEventHandler("NextFrame", "OnFirstFrame", GeminiAddon)
+end
 function GeminiAddon:OnDependencyError(strDep, strError) return false end
 
 Apollo.RegisterPackage(GeminiAddon, MAJOR, MINOR, {})

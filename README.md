@@ -21,6 +21,9 @@ Unfortunately Apollo does not allow addons to specify or rename the callback han
 A new callback has been provided with the name `OnEnable` and this callback will fire when the player has been loaded and entered the world.
  
 The OnRestoreSettings callback will fire for each level with save data after OnEnable has been called.
+
+If there is no data to be restored OnRestoreSettings will still be called with nil for the Saved Data parameter.
+This behavior will occur for each save level possible.  Default data states can be set during this by checking for SavedData == nil
  
 This means the start up sequence for an addon will become: OnInitialize > OnEnable > OnRestoreSettings
 

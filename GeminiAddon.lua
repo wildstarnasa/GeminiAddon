@@ -686,7 +686,7 @@ local function IsEnabled(self) return self.EnabledState end
 
 local function IsModule(self) return false end
 
-local function AddonLog(self, t)
+function AddonLog(self, t)
 	self._DebugLog = self._DebugLog or {}
 	tinsert(self._DebugLog, { what = t, when = ostime() })
 end

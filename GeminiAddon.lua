@@ -114,6 +114,7 @@ function GeminiAddon:OnCharacterCreated()
 				while nRestoreIndex do
 					local tAddonRestore = tremove(self.RestoreQueue, nRestoreIndex)
 					self:RestoreAddon(tAddonRestore.oAddon, tAddonRestore.eLevel, tAddonRestore.tSavedData)
+					nRestoreIndex = QueuedForRestore(oAddon)
 				end
 				oAddon.___bRestoreOccurred = nil
 			else

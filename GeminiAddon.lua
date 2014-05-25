@@ -18,7 +18,7 @@
 -- OnInitialize -> OnEnable -> OnRestoreSettings
 -- OnSaveSettings is called upon reloadui and character log out.
 
-local MAJOR, MINOR = "Gemini:Addon-1.0", 9
+local MAJOR, MINOR = "Gemini:Addon-1.0", 10
 local APkg = Apollo.GetPackage(MAJOR)
 if APkg and (APkg.nVersion or 0) >= MINOR then
 	return -- no upgrade is needed
@@ -96,27 +96,14 @@ Apollo.RegisterEventHandler("CharacterCreated", "OnCharacterCreated", GeminiAddo
 --- Processes the enable and restore queues when the player enters the world
 -- **Note:** do not call this manually
 function GeminiAddon:OnCharacterCreated()
-	while (#self.EnableQueue > 0) do
-		local oAddon = tremove(GeminiAddon.EnableQueue, 1)
-		self:EnableAddon(oAddon)
+	-- process enable queue for each addon
+	while #self.EnableQueue > 0 do
+		local oAddon = tremove(self.EnableQueue, 1)
+		GeminiAddon:EnableAddon(oAddon)
 	end
-
-	for strName, oAddon in pairs(self.Addons) do
-		if oAddon.OnRestore == GeminiAddon.GeminiRestore then
-			if oAddon.___bRestoreOccurred then
-			local nRestoreIndex = QueuedForRestore(oAddon)
-				while nRestoreIndex do
-					local tAddonRestore = tremove(self.RestoreQueue, nRestoreIndex)
-					self:RestoreAddon(tAddonRestore.oAddon, tAddonRestore.eLevel, tAddonRestore.tSavedData)
-					nRestoreIndex = QueuedForRestore(oAddon)
-				end
-				oAddon.___bRestoreOccurred = nil
-			else
-				for k,v in pairs(GameLib.CodeEnumAddonSaveLevel) do
-					self:RestoreAddon(oAddon, v, nil)
-				end
-			end
-		end
+	while #self.RestoreQueue > 0 do
+		local tAddonRestore = tremove(self.RestoreQueue, 1)
+		GeminiAddon:RestoreAddon(tAddonRestore.oAddon, tAddonRestore.eLevel, tAddonRestore.tSavedData)
 	end
 end
 

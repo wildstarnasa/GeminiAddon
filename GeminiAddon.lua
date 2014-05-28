@@ -98,6 +98,7 @@ local function DelayedEnable(oAddon)
 	local strName = oAddon:GetName()
 
 	if GameLib.GetPlayerUnit() == nil then
+		-- If the Player Unit doesn't exist we wait for the CharacterCreated event instead
 		GeminiAddon.Timers[strName] = nil
 		Apollo.RegisterEventHandler("CharacterCreated", "___OnDelayEnable", oAddon)
 		return
@@ -240,6 +241,7 @@ function GeminiAddon:NewAddon(oAddonOrName, ...)
 		end
 		GeminiAddon.InitializeQueue[strName] = nil
 		self.___OnDelayEnable = function() DelayedEnable(self) end
+		-- Wait 0 seconds (hah?) this allows OnRestore to have occured
 		GeminiAddon.Timers[strName] = ApolloTimer.Create(0, false, "___OnDelayEnable",self)
 	end
 	

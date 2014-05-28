@@ -8,17 +8,14 @@
 --
 -- The core callbacks have been "renamed" for consumption that are used when creating an addon:
 -- OnLoad    -> OnInitialize
--- OnSave    -> OnSaveSettings
--- OnRestore -> OnRestoreSettings (delayed until the character has been loaded into the world before it is called)
 -- 
 -- New callback:
--- OnEnable   - Called when the character has been loaded and is in the world. Called after OnInitialize but before OnRestoreSettings
+-- OnEnable   - Called when the character has been loaded and is in the world. Called after OnInitialize and after Restore would have occured
 --
 -- General flow should be:
--- OnInitialize -> OnEnable -> OnRestoreSettings
--- OnSaveSettings is called upon reloadui and character log out.
+-- OnInitialize -> OnEnable 
 
-local MAJOR, MINOR = "Gemini:Addon-1.0", 10
+local MAJOR, MINOR = "Gemini:Addon-1.1", 1
 local APkg = Apollo.GetPackage(MAJOR)
 if APkg and (APkg.nVersion or 0) >= MINOR then
 	return -- no upgrade is needed
@@ -30,17 +27,17 @@ local error, type, tostring, select, pairs = error, type, tostring, select, pair
 local setmetatable, getmetatable, xpcall = setmetatable, getmetatable, xpcall
 local assert, loadstring, rawset, next, unpack = assert, loadstring, rawset, next, unpack
 local tinsert, tremove, ostime = table.insert, table.remove, os.time
-local QueuedForRestore, QueuedForInitialization
 
-GeminiAddon._VERSION        = MINOR
+
 GeminiAddon.Addons          = GeminiAddon.Addons or {}          -- addon collection
-GeminiAddon.InitializeQueue = GeminiAddon.InitializeQueue or {} -- addons that are new and not initialized
-GeminiAddon.EnableQueue     = GeminiAddon.EnableQueue or {}     -- addons awaiting to be enabled
-GeminiAddon.RestoreQueue    = GeminiAddon.RestoreQueue or {}    -- addons awaiting to be restored
 GeminiAddon.AddonStatus     = GeminiAddon.AddonStatus or {}     -- status of addons
+GeminiAddon.Timers          = GeminiAddon.Timers or {}          -- Timers for OnEnable
 
- -- per addon embedded packages list
-GeminiAddon.Embeds       = GeminiAddon.Embeds or setmetatable({}, {__index = function(tbl, key) tbl[key] = {} return tbl[key] end })
+local mtGenTable = { __index = function(tbl, key) tbl[key] = {} return tbl[key] end }
+ -- per addon lists
+GeminiAddon.Embeds          = GeminiAddon.Embeds or setmetatable({}, mtGenTable)
+GeminiAddon.InitializeQueue = GeminiAddon.InitializeQueue or setmetatable({}, mtGenTable) -- addons that are new and not initialized
+GeminiAddon.EnableQueue     = GeminiAddon.EnableQueue or setmetatable({}, mtGenTable)     -- addons awaiting to be enabled
 
 -- Check if the player unit is available
 local function IsPlayerInWorld()
@@ -88,53 +85,39 @@ local function safecall(func, ...)
 	end
 end
 
--- delay the firing the OnEnable callback until after OnLoad is called
--- this is required if we are reloading the ui
--- otherwise wait until CharacterCreated is fired
-Apollo.RegisterEventHandler("CharacterCreated", "OnCharacterCreated", GeminiAddon)
-
---- Processes the enable and restore queues when the player enters the world
--- **Note:** do not call this manually
-function GeminiAddon:OnCharacterCreated()
-	-- process enable queue for each addon
-	while #self.EnableQueue > 0 do
-		local oAddon = tremove(self.EnableQueue, 1)
-		GeminiAddon:EnableAddon(oAddon)
-	end
-	while #self.RestoreQueue > 0 do
-		local tAddonRestore = tremove(self.RestoreQueue, 1)
-		GeminiAddon:RestoreAddon(tAddonRestore.oAddon, tAddonRestore.eLevel, tAddonRestore.tSavedData)
-	end
-end
-
 local function AddonToString(self)
 	return self.Name
-end
-
--- Check if the addon is queued for initialization
-local function QueuedForInitialization(oAddon)
-	for i = 1, #GeminiAddon.InitializeQueue do
-		if GeminiAddon.InitializeQueue[i] == oAddon then
-			return true
-		end
-	end
-	return false
-end
-
--- Preserve old function when upgrading so that comparison in OnCharacterCreated is valid
-GeminiAddon.GeminiRestore = GeminiAddon.GeminiRestore or function(self, eLevel, tSavedData)
-	self.___bRestoreOccurred = true
-	if IsPlayerInWorld() then
-		safecall(self.OnRestoreSettings, self, eLevel, tSavedData)
-	else
-		tinsert(GeminiAddon.RestoreQueue, { oAddon = self, eLevel = eLevel, tSavedData = tSavedData })
-	end
 end
 
 local Enable, Disable, Embed, GetName, SetEnabledState, AddonLog
 local EmbedModule, EnableModule, DisableModule, NewModule, GetModule, SetDefaultModulePrototype, SetDefaultModuleState, SetDefaultModulePackages
 
-function GeminiAddon:NewAddonProto(strOwner, oAddonOrName, oNilOrName)
+-- delay the firing the OnEnable callback until after Character is in world
+-- and OnRestore would have occured
+local function DelayedEnable(oAddon)
+	local strName = oAddon:GetName()
+
+	if GameLib.GetPlayerUnit() == nil then
+		GeminiAddon.Timers[strName] = nil
+		Apollo.RegisterEventHandler("CharacterCreated", "___OnDelayEnable", oAddon)
+		return
+	end
+
+	local tEnableQueue = GeminiAddon.EnableQueue[strName]
+
+	while #tEnableQueue > 0 do
+		local oAddonToEnable = tremove(tEnableQueue, 1)
+		GeminiAddon:EnableAddon(oAddonToEnable)
+	end
+
+	-- Cleanup
+	GeminiAddon.EnableQueue[strName] = nil
+	GeminiAddon.Timers[strName] = nil
+	Apollo.RemoveEventHandler("CharacterCreated", oAddon)
+	oAddon.___OnDelayEnable = nil
+end
+
+local function NewAddonProto(strInitAddon, oAddonOrName, oNilOrName)
 	local oAddon, strAddonName
 
 	-- get addon name
@@ -143,13 +126,6 @@ function GeminiAddon:NewAddonProto(strOwner, oAddonOrName, oNilOrName)
 		strAddonName = oNilOrName
 	else
 		strAddonName = oAddonOrName
-	end
-	
-	if type(strAddonName) ~= "string" then
-		error(("Usage: NewAddon([object, ] strAddonName, bOnConfigure[, tDependencies][, strPkgName, ...]): 'strAddonName' - string expected got '%s'."):format(type(strAddonName)), 2)
-	end
-	if self.Addons[strAddonName] then
-		error(("Usage: NewAddon([object, ] strAddonName, bOnConfigure[, tDependencies][, strPkgName, ...]): 'strAddonName' - Addon '%s' already registered in GeminiAddon."):format(strAddonName), 2)
 	end
 	
 	oAddon = oAddon or {}
@@ -165,7 +141,7 @@ function GeminiAddon:NewAddonProto(strOwner, oAddonOrName, oNilOrName)
 	setmetatable(oAddon, addonmeta)
 	
 	-- setup addon skeleton
-	self.Addons[strAddonName] = oAddon
+	GeminiAddon.Addons[strAddonName] = oAddon
 	oAddon.Modules = {}
 	oAddon.OrderedModules = {}
 	oAddon.DefaultModulePackages = {}
@@ -174,7 +150,7 @@ function GeminiAddon:NewAddonProto(strOwner, oAddonOrName, oNilOrName)
 	Embed( oAddon )
 	
 	-- Add to Queue of Addons to be Initialized during OnLoad
-	tinsert(self.InitializeQueue, { oAddon = oAddon, strOwner = strOwner })
+	tinsert(GeminiAddon.InitializeQueue[strInitAddon], oAddon)
 	return oAddon
 end
 
@@ -217,8 +193,16 @@ function GeminiAddon:NewAddon(oAddonOrName, ...)
 		strAddonName = oAddonOrName
 	end
 
+	if type(strAddonName) ~= "string" then
+		error(("Usage: NewAddon([object, ] strAddonName, bOnConfigure[, tDependencies][, strPkgName, ...]): 'strAddonName' - string expected got '%s'."):format(type(strAddonName)), 2)
+	end
+	if self.Addons[strAddonName] then
+		error(("Usage: NewAddon([object, ] strAddonName, bOnConfigure[, tDependencies][, strPkgName, ...]): 'strAddonName' - Addon '%s' already registered in GeminiAddon."):format(strAddonName), 2)
+	end
+	
 	-- get configure state
-	local strConfigBtnName = select(i, ...); i = i + 1
+	local strConfigBtnName = select(i, ...)
+	i = i + 1
 	local bConfigure = (strConfigBtnName == true or type(strConfigBtnName) == "string")
 	if bConfigure then
 		strConfigBtnName = type(strConfigBtnName) == "boolean" and strAddonName or strConfigBtnName
@@ -235,45 +219,30 @@ function GeminiAddon:NewAddon(oAddonOrName, ...)
 		tDependencies = {}
 	end
 
-	local oAddon = self:NewAddonProto(strAddonName, oAddonOrName, oNilOrName)
+	local oAddon = NewAddonProto(strAddonName, oAddonOrName, oNilOrName)
 
 	self:EmbedPackages(oAddon, select(i, ...))
 
 	-- Setup callbacks for the addon
 	-- Setup the OnLoad callback handler to initialize the addon
-	-- and either enable or delay enable the addon
+	-- and delay enable the addon
 	oAddon.OnLoad = function(self)
 		local strName = self:GetName()
-		local nInitIndex = QueuedForInitialization(strName)
-		while nInitIndex do
-			local oAddonToInit = tremove(GeminiAddon.InitializeQueue, nInitIndex).oAddon
+		local tInitQueue = GeminiAddon.InitializeQueue[strName]
+		while #tInitQueue > 0 do
+			local oAddonToInit = tremove(tInitQueue, 1)
 			local retVal = GeminiAddon:InitializeAddon(oAddonToInit)
-			if retVal ~= nil then return retVal end
-			tinsert(GeminiAddon.EnableQueue, oAddonToInit)
-			nInitIndex = QueuedForInitialization(strName)
-		end
-	
-		if IsPlayerInWorld() then
-			while (#GeminiAddon.EnableQueue > 0) do
-				local oAddonToInit = tremove(GeminiAddon.EnableQueue, 1)
-				GeminiAddon:EnableAddon(oAddonToInit)
+			if retVal ~= nil then
+				Apollo.AddAddonErrorText(self, retVal)
+				return retVal
 			end
+			tinsert(GeminiAddon.EnableQueue[strName], oAddonToInit)
 		end
+		GeminiAddon.InitializeQueue[strName] = nil
+		self.___OnDelayEnable = function() DelayedEnable(self) end
+		GeminiAddon.Timers[strName] = ApolloTimer.Create(0, false, "___OnDelayEnable",self)
 	end
 	
-	-- Setup the OnRestore callback handler to either call OnRestoreSettings or
-	-- delay until the character is loaded.  Possibly setup by a Mixin, if so
-	-- preserve the embed
-	oAddon.OnRestore = oAddon.OnRestore or GeminiAddon.GeminiRestore
-	
-	-- Setup the OnSave callback handler to call OnSaveSettings.  Possibly setup
-	-- by a Mixin, if so preserve the embed
-	oAddon.OnSave = oAddon.OnSave or function(self, eLevel)
-		if type(self.OnSaveSettings) == "function" then
-			return self:OnSaveSettings(eLevel)
-		end
-	end
-
 	-- Register with Apollo
 	Apollo.RegisterAddon(oAddon, bConfigure, strConfigBtnName, tDependencies)
 	return oAddon
@@ -292,11 +261,6 @@ function GeminiAddon:GetAddon(strAddonName, bSilent)
 	return self.Addons[strAddonName]
 end
 
-
--- Used internally when OnRestore is delayed
-function GeminiAddon:RestoreAddon(oAddon, eLevel, tSavedData)
-	safecall(oAddon.OnRestoreSettings, oAddon, eLevel, tSavedData)
-end
 
 --- Enable the addon
 -- Used internally when the player has entered the world
@@ -451,18 +415,26 @@ local function IsModuleTrue(self) return true end
 -- local MyModule = MyAddon:NewModule("MyModule", "PkgWithEmbed-1.0", "PkgWithEmbed2-1.0")
 -- 
 -- -- Create a module with a prototype
--- local oPrototype = { OnEnable = function(self) print("OnEnable called!") end }
+-- local oPrototype = { OnEnable = function(self) Print("OnEnable called!") end }
 -- local MyModule = MyAddon:NewModule("MyModule", oPrototype, "PkgWithEmbed-1.0", "PkgWithEmbed2-1.0")
 function NewModule(self, strName, oPrototype, ...)
 	if type(strName) ~= "string" then error(("Usage: NewModule(strName, [oPrototype, [strPkgName, strPkgName, strPkgName, ...]): 'strName' - string expected got '%s'."):format(type(strName)), 2) end
 	if type(oPrototype) ~= "string" and type(oPrototype) ~= "table" and type(oPrototype) ~= "nil" then error(("Usage: NewModule(strName, [oPrototype, [strPkgName, strPkgName, strPkgName, ...]): 'oPrototype' - table (oPrototype), string (strPkgName) or nil expected got '%s'."):format(type(oPrototype)), 2) end
 	if self.Modules[strName] then error(("Usage: NewModule(strName, [oPrototype, [strPkgName, strPkgName, strPkgName, ...]): 'strName' - Module '%s' already exists."):format(strName), 2) end
 	
-	local oModule = GeminiAddon:NewAddonProto(self:GetName(), string.format("%s_%s", self:GetName() or tostring(self), strName))
+	-- Go up the family tree to find the addon that started it all
+	local oCurrParent, oNextParent = self, self.Parent
+	while oNextParent do
+		oCurrParent = oNextParent
+		oNextParent = oCurrParent.Parent
+	end
+
+	local oModule = NewAddonProto(oCurrParent:GetName(), string.format("%s_%s", self:GetName() or tostring(self), strName))
 
 	oModule.IsModule = IsModuleTrue
 	oModule:SetEnabledState(self.DefaultModuleState)
 	oModule.ModuleName = strName
+	oModule.Parent = self
 	
 	if type(oPrototype) == "string" then
 		GeminiAddon:EmbedPackages(oModule, oPrototype, ...)
@@ -500,10 +472,12 @@ function GetName(self)
 end
 
 -- Check if the addon is queued to be enabled
-local function QueuedForEnable(oAddon)
-	for i = 1, #GeminiAddon.EnableQueue do
-		if GeminiAddon.EnableQueue[i] == oAddon then
-			return true
+local function QueuedForInitialization(oAddon)
+	for strAddonName, tAddonList in pairs(GeminiAddon.EnableQueue) do
+		for nIndex = 1, #tAddonList do
+			if tAddonList[nIndex] == oAddon then
+				return true
+			end
 		end
 	end
 	return false
@@ -511,7 +485,7 @@ end
 
 --- Enables the addon, if possible, returns true on success.
 -- This internally calls GeminiAddon:EnableAddon(), thus dispatching the OnEnable callback
--- and enabling all modules on the addon
+-- and enabling all modules on the addon (unless explicitly disabled)
 -- :Enable() also sets the internal `enableState` variable to true.
 -- @name //addon//:Enable
 -- @paramsig
@@ -519,14 +493,8 @@ end
 function Enable(self)
 	self:SetEnabledState(true)
 	
-	if not QueuedForEnable(self) then
-		if IsPlayerInWorld() then
-			-- attempt to enable it
-			return GeminiAddon:EnableAddon(self)
-		else
-			-- add to enable queue
-			tinsert(GeminiAddon.EnableQueue, self)
-		end
+	if not QueuedForInitialization(self) then
+		return GeminiAddon:EnableAddon(self)
 	end
 end
 
@@ -614,13 +582,13 @@ end
 -- @param prototype Default prototype for the new modules (table)
 -- @usage 
 -- -- Define a prototype
--- local prototype = { OnEnable = function(self) print("OnEnable called!") end }
+-- local prototype = { OnEnable = function(self) Print("OnEnable called!") end }
 -- -- Set the default prototype
 -- MyAddon:SetDefaultModulePrototype(prototype)
 -- -- Create a module and explicitly Enable it
 -- local MyModule = MyAddon:NewModule("MyModule")
 -- MyModule:Enable()
--- -- should print "OnEnable called!" now
+-- -- should Print "OnEnable called!" now
 -- @see NewModule
 function SetDefaultModulePrototype(self, tPrototype)
 	if next(self.Modules) then
@@ -707,7 +675,7 @@ end
 -- @usage 
 -- -- Print a list of all registered GeminiAddons
 -- for name, addon in GeminiAddon:IterateAddons() do
---   print("Addon: " .. name)
+--   Print("Addon: " .. name)
 -- end
 function GeminiAddon:IterateAddons() return pairs(self.Addons) end
 
@@ -716,36 +684,12 @@ function GeminiAddon:IterateAddons() return pairs(self.Addons) end
 -- -- Print a list of all enabled addons
 -- for name, status in GeminiAddon:IterateAddonStatus() do
 --   if status then
---     print("EnabledAddon: " .. name)
+--     Print("EnabledAddon: " .. name)
 --   end
 -- end
 function GeminiAddon:IterateAddonStatus() return pairs(self.AddonStatus) end
 
-function QueuedForRestore(oAddon)
-	for i = 1, #GeminiAddon.RestoreQueue do
-		if GeminiAddon.RestoreQueue[i].oAddon == oAddon then
-			return i
-		end
-	end
-	return false
-end
-
-function QueuedForInitialization(strName)
-	for i = 1, #GeminiAddon.InitializeQueue do
-		if GeminiAddon.InitializeQueue[i].strOwner == strName then
-			return i
-		end
-	end
-	return false
-end
-
-function GeminiAddon:OnFirstFrame()
-	Apollo.RemoveEventHandler("NextFrame", self)
-end
-
-function GeminiAddon:OnLoad()
-	Apollo.RegisterEventHandler("NextFrame", "OnFirstFrame", GeminiAddon)
-end
+function GeminiAddon:OnLoad() end
 function GeminiAddon:OnDependencyError(strDep, strError) return false end
 
 Apollo.RegisterPackage(GeminiAddon, MAJOR, MINOR, {})

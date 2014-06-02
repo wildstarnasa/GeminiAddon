@@ -1,4 +1,4 @@
---- GeminiAddon-1.0
+--- GeminiAddon-1.1
 -- Formerly DaiAddon
 -- Inspired by AceAddon
 -- Modules and packages embeds are based heavily on AceAddon's functionally, so credit goes their authors.
@@ -15,7 +15,7 @@
 -- General flow should be:
 -- OnInitialize -> OnEnable 
 
-local MAJOR, MINOR = "Gemini:Addon-1.1", 1
+local MAJOR, MINOR = "Gemini:Addon-1.1", 2
 local APkg = Apollo.GetPackage(MAJOR)
 if APkg and (APkg.nVersion or 0) >= MINOR then
 	return -- no upgrade is needed
@@ -166,21 +166,21 @@ end
 -- @param strPkgName List of packages to embed into the addon - requires the packages to be registered with Apollo.RegisterPackage and for the packages to support embedding
 -- @usage
 -- -- Create a simple addon
--- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.0").tPackage:NewAddon("MyAddon", false)
+-- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.1").tPackage:NewAddon("MyAddon", false)
 -- 
 -- -- Create a simple addon with a configure button with custom text
--- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.0").tPackage:NewAddon("MyAddon", "Addon Options Button")
+-- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.1").tPackage:NewAddon("MyAddon", "Addon Options Button")
 -- 
 -- -- Create a simple addon with a configure button and a dependency on ChatLog / ChatLogEx
--- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.0").tPackage:NewAddon("MyAddon", true, { "ChatLog", "ChatLogEx" })
+-- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.1").tPackage:NewAddon("MyAddon", true, { "ChatLog", "ChatLogEx" })
 -- 
 -- -- Create an addon with a base object
 -- local tAddonBase = { config = { ... some default settings ... }, ... }
--- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.0").tPackage:NewAddon(tAddonBase, "MyAddon", false)
+-- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.1").tPackage:NewAddon(tAddonBase, "MyAddon", false)
 -- 
 -- -- Create an addon with a base object with a dependency on ChatLog / ChatLogEx
 -- local tAddonBase = { config = { ... some default settings ... }, ... }
--- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.0").tPackage:NewAddon(tAddonBase, "MyAddon", false, { "ChatLog", "ChatLogEx" })
+-- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.1").tPackage:NewAddon(tAddonBase, "MyAddon", false, { "ChatLog", "ChatLogEx" })
 function GeminiAddon:NewAddon(oAddonOrName, ...)
 	local oAddon, strAddonName
 	local oNilOrName = nil
@@ -255,7 +255,7 @@ end
 -- @param strAddonName the addon name registered with GeminiAddon
 -- @param bSilent return nil if addon is not found instead of throwing an error
 -- @usage
--- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.0").tPackage:GetAddon("MyAddon")
+-- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.1").tPackage:GetAddon("MyAddon")
 function GeminiAddon:GetAddon(strAddonName, bSilent)
 	if not bSilent and not self.Addons[strAddonName] then
 		error(("Usage: GetAddon(strAddonName): 'strAddonName' - Cannot find an GeminiAddon called '%s'."):format(tostring(strAddonName)), 2)
@@ -314,7 +314,7 @@ function GeminiAddon:DisableAddon(oAddon)
 		return false
 	end
 
-	safecall( addon.OnDisable, oAddon )
+	safecall( oAddon.OnDisable, oAddon )
 
 	if self.AddonStatus[strAddonName] then
 		local tEmbeds = self.Embeds[oAddon]
@@ -545,7 +545,7 @@ end
 -- @param strPkgName List of Packages to embed into the addon
 -- @usage 
 -- -- Create the addon object
--- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.0").tPackage:NewAddon("MyAddon")
+-- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.1").tPackage:NewAddon("MyAddon")
 -- -- Configure default packages for modules
 -- MyAddon:SetDefaultModulePackages("MyEmbeddablePkg-1.0")
 -- -- Create a module
@@ -564,7 +564,7 @@ end
 -- @param state Default state for new modules, true for enabled, false for disabled
 -- @usage 
 -- -- Create the addon object
--- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.0").tPackage:NewAddon("MyAddon")
+-- local MyAddon = Apollo.GetPackage("Gemini:Addon-1.1").tPackage:NewAddon("MyAddon")
 -- -- Set the default state to "disabled"
 -- MyAddon:SetDefaultModuleState(false)
 -- -- Create a module and explicilty enable it

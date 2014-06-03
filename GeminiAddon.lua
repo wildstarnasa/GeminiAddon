@@ -15,7 +15,7 @@
 -- General flow should be:
 -- OnInitialize -> OnEnable 
 
-local MAJOR, MINOR = "Gemini:Addon-1.1", 3
+local MAJOR, MINOR = "Gemini:Addon-1.1", 4
 local APkg = Apollo.GetPackage(MAJOR)
 if APkg and (APkg.nVersion or 0) >= MINOR then
 	return -- no upgrade is needed
@@ -275,7 +275,7 @@ function GeminiAddon:EnableAddon(oAddon)
 	end
 
 	local strAddonName = AddonToString(oAddon)
-	
+
 	if self.AddonStatus[strAddonName] or not oAddon.EnabledState then
 		return false
 	end
@@ -297,7 +297,7 @@ function GeminiAddon:EnableAddon(oAddon)
 		-- enable modules
 		local tModules = oAddon.OrderedModules
 		for i = 1, #tModules do
-			oAddon:EnableAddon(tModules[i])
+			self:EnableAddon(tModules[i])
 		end
 	end
 	return self.AddonStatus[strAddonName]
@@ -494,7 +494,7 @@ end
 -- @usage
 function Enable(self)
 	self:SetEnabledState(true)
-	
+
 	if not QueuedForInitialization(self) then
 		return GeminiAddon:EnableAddon(self)
 	end

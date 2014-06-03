@@ -15,20 +15,20 @@
 -- General flow should be:
 -- OnInitialize -> OnEnable 
 
-local MAJOR, MINOR = "Gemini:Addon-1.1", 2
+local MAJOR, MINOR = "Gemini:Addon-1.1", 3
 local APkg = Apollo.GetPackage(MAJOR)
 if APkg and (APkg.nVersion or 0) >= MINOR then
 	return -- no upgrade is needed
 end
 local GeminiAddon = APkg and APkg.tPackage or {}
 
-
+-- Upvalues
 local error, type, tostring, select, pairs = error, type, tostring, select, pairs
 local setmetatable, getmetatable, xpcall = setmetatable, getmetatable, xpcall
 local assert, loadstring, rawset, next, unpack = assert, loadstring, rawset, next, unpack
 local tinsert, tremove, ostime = table.insert, table.remove, os.time
 
-
+-- Package tables
 GeminiAddon.Addons          = GeminiAddon.Addons or {}          -- addon collection
 GeminiAddon.AddonStatus     = GeminiAddon.AddonStatus or {}     -- status of addons
 GeminiAddon.Timers          = GeminiAddon.Timers or {}          -- Timers for OnEnable
@@ -128,10 +128,10 @@ local function NewAddonProto(strInitAddon, oAddonOrName, oNilOrName)
 	else
 		strAddonName = oAddonOrName
 	end
-	
+
 	oAddon = oAddon or {}
 	oAddon.Name = strAddonName
-	
+
 	-- use existing metatable if exists
 	local addonmeta = {}
 	local oldmeta = getmetatable(oAddon)
@@ -140,7 +140,7 @@ local function NewAddonProto(strInitAddon, oAddonOrName, oNilOrName)
 	end
 	addonmeta.__tostring = AddonToString
 	setmetatable(oAddon, addonmeta)
-	
+
 	-- setup addon skeleton
 	GeminiAddon.Addons[strAddonName] = oAddon
 	oAddon.Modules = {}
@@ -200,7 +200,7 @@ function GeminiAddon:NewAddon(oAddonOrName, ...)
 	if self.Addons[strAddonName] then
 		error(("Usage: NewAddon([object, ] strAddonName, bOnConfigure[, tDependencies][, strPkgName, ...]): 'strAddonName' - Addon '%s' already registered in GeminiAddon."):format(strAddonName), 2)
 	end
-	
+
 	-- get configure state
 	local strConfigBtnName = select(i, ...)
 	i = i + 1
@@ -244,7 +244,7 @@ function GeminiAddon:NewAddon(oAddonOrName, ...)
 		-- Wait 0 seconds (hah?) this allows OnRestore to have occured
 		GeminiAddon.Timers[strName] = ApolloTimer.Create(0, false, "___OnDelayEnable",self)
 	end
-	
+
 	-- Register with Apollo
 	Apollo.RegisterAddon(oAddon, bConfigure, strConfigBtnName, tDependencies)
 	return oAddon
@@ -273,16 +273,16 @@ function GeminiAddon:EnableAddon(oAddon)
 	if type(oAddon) == "string" then 
 		oAddon = self:GetAddon(oAddon) 
 	end
-	
+
 	local strAddonName = AddonToString(oAddon)
 	
 	if self.AddonStatus[strAddonName] or not oAddon.EnabledState then
 		return false
 	end
-	
+
 	self.AddonStatus[strAddonName] = true
 	safecall(oAddon.OnEnable, oAddon)
-	
+
 	if self.AddonStatus[strAddonName] then
 		-- embed packages
 		local tEmbeds = self.Embeds[oAddon]
@@ -297,7 +297,7 @@ function GeminiAddon:EnableAddon(oAddon)
 		-- enable modules
 		local tModules = oAddon.OrderedModules
 		for i = 1, #tModules do
-			oAddon:EnableModule(tModules[i].ModuleName)
+			oAddon:EnableAddon(tModules[i])
 		end
 	end
 	return self.AddonStatus[strAddonName]
@@ -343,7 +343,7 @@ end
 function GeminiAddon:InitializeAddon(oAddon)
 	local _, retVal = safecall(oAddon.OnInitialize, oAddon)
 	if retVal ~= nil then return retVal end
-	
+
 	local tEmbeds = self.Embeds[oAddon]
 	for i = 1, #tEmbeds do
 		local APkg = Apollo.GetPackage(tEmbeds[i])
@@ -423,7 +423,7 @@ function NewModule(self, strName, oPrototype, ...)
 	if type(strName) ~= "string" then error(("Usage: NewModule(strName, [oPrototype, [strPkgName, strPkgName, strPkgName, ...]): 'strName' - string expected got '%s'."):format(type(strName)), 2) end
 	if type(oPrototype) ~= "string" and type(oPrototype) ~= "table" and type(oPrototype) ~= "nil" then error(("Usage: NewModule(strName, [oPrototype, [strPkgName, strPkgName, strPkgName, ...]): 'oPrototype' - table (oPrototype), string (strPkgName) or nil expected got '%s'."):format(type(oPrototype)), 2) end
 	if self.Modules[strName] then error(("Usage: NewModule(strName, [oPrototype, [strPkgName, strPkgName, strPkgName, ...]): 'strName' - Module '%s' already exists."):format(strName), 2) end
-	
+
 	-- Go up the family tree to find the addon that started it all
 	local oCurrParent, oNextParent = self, self.Parent
 	while oNextParent do
@@ -437,7 +437,7 @@ function NewModule(self, strName, oPrototype, ...)
 	oModule:SetEnabledState(self.DefaultModuleState)
 	oModule.ModuleName = strName
 	oModule.Parent = self
-	
+
 	if type(oPrototype) == "string" then
 		GeminiAddon:EmbedPackages(oModule, oPrototype, ...)
 	else
@@ -449,13 +449,13 @@ function NewModule(self, strName, oPrototype, ...)
 		oPrototype = self.DefaultModulePrototype or nil
 		--self:_Log("Using Prototype type: " .. tostring(oPrototype))
 	end
-	
+
 	if type(oPrototype) == "table" then
 		local mt = getmetatable(oModule)
 		mt.__index = oPrototype
 		setmetatable(oModule, mt)
 	end
-	
+
 	safecall(self.OnModuleCreated, self, oModule)
 	self.Modules[strName] = oModule
 	tinsert(self.OrderedModules, oModule)

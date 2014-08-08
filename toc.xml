@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Addon Author="" APIVersion="9" Name="GeminiAddon" Version="@project-version@" Description="A template for creating addon objects.">
+	<Script Name="GeminiAddon.lua"/>
+</Addon>

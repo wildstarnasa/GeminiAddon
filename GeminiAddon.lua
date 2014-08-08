@@ -15,7 +15,7 @@
 -- General flow should be:
 -- OnInitialize -> OnEnable 
 
-local MAJOR, MINOR = "Gemini:Addon-1.1", 4
+local MAJOR, MINOR = "Gemini:Addon-1.1", 5
 local APkg = Apollo.GetPackage(MAJOR)
 if APkg and (APkg.nVersion or 0) >= MINOR then
 	return -- no upgrade is needed
@@ -26,7 +26,11 @@ local GeminiAddon = APkg and APkg.tPackage or {}
 local error, type, tostring, select, pairs = error, type, tostring, select, pairs
 local setmetatable, getmetatable, xpcall = setmetatable, getmetatable, xpcall
 local assert, loadstring, rawset, next, unpack = assert, loadstring, rawset, next, unpack
-local tinsert, tremove, ostime = table.insert, table.remove, os.time
+local tconcat, tinsert, tremove, ostime = table.concat, table.insert, table.remove, os.time
+local strformat = string.format
+
+-- Wildstar APIs
+local Apollo, ApolloTimer, GameLib = Apollo, ApolloTimer, GameLib
 
 -- Package tables
 GeminiAddon.Addons          = GeminiAddon.Addons or {}          -- addon collection
@@ -66,7 +70,7 @@ local function CreateDispatcher(argCount)
 	
 	local ARGS = {}
 	for i = 1, argCount do ARGS[i] = "arg"..i end
-	code = code:gsub("ARGS", table.concat(ARGS, ", "))
+	code = code:gsub("ARGS", tconcat(ARGS, ", "))
 	return assert(loadstring(code, "safecall Dispatcher[" .. argCount .. "]"))(xpcall, fnErrorHandler)
 end
 
@@ -280,6 +284,7 @@ function GeminiAddon:EnableAddon(oAddon)
 		return false
 	end
 
+	-- set status first before calling OnEnable. this allows for Disabling of the addon in OnEnable.
 	self.AddonStatus[strAddonName] = true
 	safecall(oAddon.OnEnable, oAddon)
 
@@ -314,9 +319,12 @@ function GeminiAddon:DisableAddon(oAddon)
 		return false
 	end
 
+	-- set statuses first before calling OnDisable, this allows for aborting the disable in OnDisable.
+	self.AddonStatus[strAddonName] = false
+
 	safecall( oAddon.OnDisable, oAddon )
 
-	if self.AddonStatus[strAddonName] then
+	if not self.AddonStatus[strAddonName] then
 		local tEmbeds = self.Embeds[oAddon]
 		for i = 1, #tEmbeds do
 			local APkg = Apollo.GetPackage(tEmbeds[i])
@@ -328,7 +336,7 @@ function GeminiAddon:DisableAddon(oAddon)
 
 		local tModules = oAddon.OrderedModules
 		for i = 1, #tModules do
-			oAddon:DisableModule(tModules[i])
+			self:DisableAddon(tModules[i])
 		end
 	end
 
@@ -431,7 +439,7 @@ function NewModule(self, strName, oPrototype, ...)
 		oNextParent = oCurrParent.Parent
 	end
 
-	local oModule = NewAddonProto(oCurrParent:GetName(), string.format("%s_%s", self:GetName() or tostring(self), strName))
+	local oModule = NewAddonProto(oCurrParent:GetName(), strformat("%s_%s", self:GetName() or tostring(self), strName))
 
 	oModule.IsModule = IsModuleTrue
 	oModule:SetEnabledState(self.DefaultModuleState)

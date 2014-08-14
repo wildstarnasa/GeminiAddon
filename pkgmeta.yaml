@@ -1,0 +1,5 @@
+package-as: GeminiAddon
+enable-nolib-creation: no
+
+ignore:
+  - README.md

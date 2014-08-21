@@ -15,7 +15,7 @@
 -- General flow should be:
 -- OnInitialize -> OnEnable 
 
-local MAJOR, MINOR = "Gemini:Addon-1.1", 5
+local MAJOR, MINOR = "Gemini:Addon-1.1", 6
 local APkg = Apollo.GetPackage(MAJOR)
 if APkg and (APkg.nVersion or 0) >= MINOR then
 	return -- no upgrade is needed
@@ -439,7 +439,7 @@ function NewModule(self, strName, oPrototype, ...)
 		oNextParent = oCurrParent.Parent
 	end
 
-	local oModule = NewAddonProto(oCurrParent:GetName(), strformat("%s_%s", self:GetName() or tostring(self), strName))
+	local oModule = NewAddonProto(oCurrParent:GetName(), strformat("%s_%s", self.Name or tostring(self), strName))
 
 	oModule.IsModule = IsModuleTrue
 	oModule:SetEnabledState(self.DefaultModuleState)
